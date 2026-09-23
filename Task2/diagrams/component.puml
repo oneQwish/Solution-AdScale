@@ -1,0 +1,43 @@
+@startuml component_bidding
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+LAYOUT_WITH_LEGEND()
+LAYOUT_TOP_DOWN()
+
+title C4 Component Diagram - Bidding Service и его окружение
+
+System_Ext(dsp, "DSP-партнёр", "OpenRTB 2.6")
+Container(gateway, "API Gateway", "Kong", "Аутентификация, rate limiting, health checks, метрики задержки")
+Container(adServer, "Ad Server", "Go, C++", "OpenRTB-адаптеры, подбор кандидатов, оркестрация ответа, упрощённый аукцион при отказе Bidding")
+Container(delivery, "Delivery Service", "Node.js", "Разметка баннера, приём показов/кликов")
+
+Container_Boundary(bidding, "Bidding Service (C++, stateless, N инстансов)") {
+    Component(api, "gRPC API", "gRPC server", "Приём запроса на аукцион, проверка здоровья, контроль времени")
+    Component(engine, "Auction Engine", "C++", "Взвешивание ставок, first-price, выбор победителя")
+    Component(rules, "Rules Evaluator", "C++", "Bid floor, блок-листы категорий, правила партнёра")
+    Component(budget, "Budget Guard", "C++", "Проверка остатка бюджета")
+    Component(store, "Cache Client", "Локальный кеш + Redis", "Локальная копия данных в памяти, при промахе - запрос в Redis")
+    Component(publisher, "Event Publisher", "Kafka producer", "Асинхронная публикация результатов аукциона")
+    Component(metrics, "Telemetry", "Prometheus, OpenTelemetry", "Метрики задержки, доля «нет ставки», трассировка по request_id")
+}
+
+ContainerDb(redis, "Redis Cluster", "Redis", "Копия ставок, бюджетов и правил партнёров")
+ContainerQueue(kafka, "Kafka", "Kafka", "rtb.auction-results.v1")
+Container(cacheUpdater, "Cache Updater", "Go", "Заполняет кеш по событиям Campaign и Financial")
+
+Rel(dsp, gateway, "Bid request", "HTTPS, OpenRTB JSON")
+Rel(gateway, adServer, "Bid request", "HTTP, таймаут 50 мс")
+Rel(adServer, api, "Провести аукцион", "gRPC, deadline 15 мс")
+Rel(adServer, delivery, "Разметка победителя", "gRPC, deadline 10 мс")
+Rel(api, engine, "Аукцион по кандидатам")
+Rel(engine, rules, "Фильтрация кандидатов")
+Rel(engine, budget, "Проверка бюджета")
+Rel(engine, store, "Ставки кандидатов")
+Rel(budget, store, "Остатки бюджетов")
+Rel(rules, store, "Правила партнёра")
+Rel(store, redis, "Чтение ставок и бюджетов", "Redis protocol")
+Rel(engine, publisher, "Результат аукциона")
+Rel(publisher, kafka, "Результаты аукционов", "Kafka, async")
+Rel(cacheUpdater, redis, "Обновление кеша", "Redis protocol")
+Rel_L(api, metrics, "Метрики, трассы")
+
+@enduml

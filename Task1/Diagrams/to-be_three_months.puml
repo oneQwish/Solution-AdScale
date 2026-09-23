@@ -1,0 +1,61 @@
+@startuml to_be_three_months
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+LAYOUT_WITH_LEGEND()
+LAYOUT_TOP_DOWN()
+
+title C4 Container Diagram - AdScale (TO-BE, через 3 месяца)
+
+Person(advertiser, "Рекламодатель", "Управляет кампаниями, бюджетами и ставками через личный кабинет")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Просматривает рекламу, кликает по баннерам")
+System_Ext(dspPartner, "DSP-партнёр", "Отправляет bid requests, получает bid responses по OpenRTB")
+System_Ext(paymentGateway, "Платёжный шлюз", "Обработка пополнения рекламных бюджетов")
+
+Container(apiGateway, "API Gateway", "Kong", "Фасад Strangler Fig: аутентификация партнёра, rate limiting, мониторинг задержки, маршрутизация")
+
+System_Boundary(monolith, "AdScale Monolith (модули с явными границами)") {
+    Container(adServer, "Ad Server", "C++, Go", "Приём OpenRTB, определение пользователя, подбор кандидатов")
+    Container(deliveryService, "Delivery Service", "Node.js", "Разметка баннера, приём показов/кликов")
+    Container(statsService, "Statistics Service", "Python", "Пакетная запись статистики из Kafka")
+    Container(financialService, "Financial Service", "Go", "Списания, счета, балансы")
+    Container(analyticsService, "Analytics Service", "Python", "Аналитические запросы")
+    Container(adCabinet, "Advertiser Dashboard", "Node.js + JavaScript", "Web UI: кампании, отчётность")
+}
+
+Container(biddingService, "Bidding Service", "C++, контейнер, N инстансов", "Аукцион: взвешивание ставок, проверка бюджета, выбор победителя. Stateless")
+Container(cacheUpdater, "Cache Updater", "Go", "Заполняет Redis данными кампаний и бюджетов")
+
+ContainerDb(redis, "Redis", "Redis, primary + replica", "Кампании, таргетинг, ставки, остатки бюджетов")
+ContainerQueue(kafka, "Kafka", "Managed Kafka", "Показы, клики, изменения кампаний и бюджетов")
+ContainerDb(postgres, "PostgreSQL", "PostgreSQL, primary", "Общая БД монолита")
+ContainerDb(pgReplica, "PostgreSQL read-реплика", "PostgreSQL, streaming replication", "Чтение для аналитики и прогрева кеша")
+
+Rel(dspPartner, apiGateway, "Bid request / response", "HTTPS, OpenRTB JSON")
+Rel(apiGateway, adServer, "Маршрутизация bid requests", "HTTP")
+Rel(advertiser, apiGateway, "Управление кампаниями", "HTTPS")
+Rel(apiGateway, adCabinet, "Запросы кабинета", "HTTP")
+Rel(endUser, apiGateway, "Показ баннера, клик", "HTTPS")
+Rel(apiGateway, deliveryService, "Показы и клики", "HTTP")
+
+Rel(adServer, redis, "Таргетинг и кандидаты", "Redis protocol")
+Rel(adServer, biddingService, "Запрос аукциона", "gRPC")
+Rel(biddingService, redis, "Ставки и остатки бюджетов", "Redis protocol")
+Rel(adServer, deliveryService, "Разметка победителя", "Internal call")
+
+Rel(deliveryService, kafka, "Публикует показы/клики", "Kafka")
+Rel(kafka, statsService, "Показы/клики", "Kafka, consumer group")
+Rel(kafka, cacheUpdater, "Изменения кампаний и бюджетов", "Kafka, consumer group")
+Rel(cacheUpdater, redis, "Обновление кеша", "Redis protocol")
+Rel(cacheUpdater, pgReplica, "Первичный прогрев кеша", "SQL")
+
+Rel(statsService, postgres, "Пакетная запись статистики", "SQL")
+Rel(financialService, postgres, "Транзакции и балансы", "SQL")
+Rel(financialService, kafka, "Изменения бюджетов", "Kafka")
+Rel(adCabinet, postgres, "CRUD кампаний", "SQL")
+Rel(adCabinet, kafka, "Изменения кампаний", "Kafka")
+Rel(adCabinet, financialService, "Управление финансами", "Internal call")
+Rel(adCabinet, analyticsService, "Запросы отчётов", "Internal call")
+Rel(analyticsService, pgReplica, "Тяжёлые аналитические запросы", "SQL")
+Rel(postgres, pgReplica, "Репликация", "Streaming replication")
+Rel(financialService, paymentGateway, "Пополнение бюджета", "HTTPS, REST")
+
+@enduml

@@ -1,0 +1,50 @@
+@startuml sequence_event_stream
+
+title Sequence - обработка показов и кликов (async, через Kafka)
+
+actor "Пользователь\nсайта/приложения" as user
+participant "API Gateway" as gw
+participant "Delivery Service" as del
+queue "Kafka\nads.impressions.v1 / ads.clicks.v1" as kafka
+participant "Statistics Service" as stats
+participant "Financial Service" as fin
+database "Finance DB\n(PostgreSQL)" as fdb
+participant "Cache Updater" as cu
+database "Redis" as redis
+database "ClickHouse" as ch
+
+user -> gw: показ баннера / клик
+gw -> del: маршрутизация
+activate del
+del -> del: impression_id / click_id\n(ключ идемпотентности)
+del ->> kafka: produce, acks=all\n(при недоступности - локальный журнал на диске)
+del --> user: HTTP-ответ\n(не ждёт обработки события)
+deactivate del
+
+par consumer group statistics
+    kafka -> stats: пакет событий
+    stats -> ch: пакетная вставка
+    stats -> kafka: commit offset
+else consumer group finance-billing
+    kafka -> fin: пакет событий показов
+    activate fin
+    fin -> fdb: в одной транзакции: impression_id в таблицу\nобработанных (уникальный индекс),\nпроводка за пакет, баланс, outbox
+    alt в пакете есть повторы
+        fdb --> fin: повторные impression_id отсечены, в проводку не вошли
+    end
+    fin -> kafka: commit offset
+    deactivate fin
+    fin ->> kafka: finance.budget-updates.v1 (из outbox)
+else consumer group cache-updater
+    kafka -> cu: изменение бюджета
+    cu -> redis: остаток бюджета кампании\nи время обновления
+end
+
+note over kafka
+  Один поток - независимые consumer group:
+  сбой одного потребителя не блокирует остальных
+  и не влияет на ответ пользователю.
+  Ошибка обработки после 5 повторов - сообщение в DLQ.
+end note
+
+@enduml
