@@ -1,0 +1,61 @@
+@startuml to_be_three_months
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+LAYOUT_WITH_LEGEND()
+LAYOUT_TOP_DOWN()
+
+title C4 Container Diagram — AdScale (TO-BE, через 3 месяца)
+
+Person(advertiser, "Рекламодатель", "Управляет кампаниями, бюджетами и ставками через личный кабинет")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Просматривает рекламу, кликает по баннерам")
+
+System_Ext(dspPartner, "DSP-партнёр", "Отправляет bid requests, получает bid responses по OpenRTB")
+System_Ext(paymentGateway, "Платёжный шлюз", "Обработка пополнения рекламных бюджетов")
+
+ContainerDb(postgres, "PostgreSQL", "База данных")
+ContainerDb(pgReplica, "read-реплика PostgreSQL", "База данных")
+
+ContainerDb(redis, "Redis", "In-memory key-value store")
+ContainerQueue(kafka, "Kafka", "event bus", "Клики, показы, обновления кампаний — асинхронная передача")
+
+'  Монолит
+System_Boundary(monolith, "AdScale Monolith (C++ / Go / Python / Node.js)") {
+
+    Container(adServer, "Ad Server", "C++, Go", "Принимает HTTP-запросы, определяет пользователя, подбирает кандидатов в рекламу")
+    Container(deliveryService, "Delivery Service", "Node.js", "Формирует HTML/JS-разметку баннера и HTTP response")
+    Container(statsService, "Statistics Service", "Python", "Запись кликов и показов") 
+    Container(financialService, "Financial Service", "Go", "Списание средств, выставление счетов, управление балансами")
+    Container(analyticsService, "Analytics Service", "Python", "Аналитические SQL-запросы по production-БД") 
+    Container(adCabinet, "Advertiser Dashboard", "Node.js + JavaScript", "Web UI: управление кампаниями, отчётность")
+}
+
+Container(biddingService, "Auction/Bidding Service", "stateless service", "Взвешивает ставки, определяет победителя аукциона") 
+
+' Внешние взаимодействия
+Rel(advertiser, adCabinet, "Управление кампаниями и баннерами")
+Rel(dspPartner, adServer, "Отправка bid requests и получение bid responses по OpenRTB")
+Rel_U(deliveryService, endUser, "Показ баннера и обработка клика")
+Rel_D(financialService, paymentGateway, "Обработка пополнения рекламных бюджетов")
+
+' Взаимодействия с базами данных
+Rel_U(postgres, pgReplica, "Репликация данных")
+Rel(statsService, postgres, "Запись статистики показов и кликов")
+Rel(analyticsService, pgReplica, "Тяжёлые аналитические запросы")
+Rel(adCabinet, postgres, "Чтение/запись данных о кампаниях и баннерах")
+Rel(redis, pgReplica, "Синхронизация данных кампаний и баннеров")
+Rel(biddingService, redis, "Чтение данных о кампаниях и баннерах")
+Rel_L(adServer, redis, "Чтение данных о кампаниях и баннерах")
+
+' Внутренние связи внутри монолита
+Rel(adCabinet, financialService, "Управление финансами", "Internal Call")
+Rel(adCabinet, analyticsService, "Запросы аналитики", "Internal Call")
+
+' Взаимодействия через Kafka
+Rel(analyticsService, kafka, "Чтение статистики показов и кликов для аналитики")
+Rel(deliveryService, kafka, "Отправка статистики показов и кликов")
+Rel(kafka, statsService, "Читает клики/показы")
+
+' Сервис ставок
+Rel(adServer, biddingService, "Запрос ставки на аукцион")
+Rel(biddingService, deliveryService, "Передача победителя аукциона и баннера для показа")
+
+@enduml
