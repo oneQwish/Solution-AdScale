@@ -1,0 +1,34 @@
+@startuml sequence_event_stream
+
+title Sequence — обработка событий показов/кликов (async, через Kafka)
+
+actor "Пользователь\nсайта/приложения" as user
+participant "API Gateway" as gw
+participant "Delivery Service" as del
+queue "Kafka" as kafka
+participant "Statistics Service" as stats
+participant "Analytics Service" as an
+participant "Financial Service" as fin
+database "PostgreSQL" as pg
+
+user -> gw: показ баннера / клик
+gw -> del: маршрутизация
+del -> kafka: produce ImpressionEvent\n/ ClickEvent
+del --> user: HTTP response\n(не ждёт обработки события)
+
+kafka -> stats: consume (consumer group)
+stats -> pg: запись статистики\nпоказов/кликов
+
+kafka -> an: consume (consumer group)
+an -> an: агрегация для отчётности\n(читает pgReplica отдельно)
+
+kafka -> fin: consume (consumer group)
+fin -> fin: асинхронное сведение баланса:\nсписание с рекламодателя +\nвыплата % DSP-партнёру
+
+note over kafka
+  Один продюсер, три независимых consumer group:
+  сбой одного потребителя не блокирует остальных
+  и не блокирует ответ пользователю.
+end note
+
+@enduml

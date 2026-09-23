@@ -1,0 +1,39 @@
+@startuml sequence_bid_request
+
+title Sequence — RTB bid request (hot path, ≤80 мс)
+
+actor "DSP-партнёр" as dsp
+participant "API Gateway\n(Kong)" as gw
+participant "Ad Server" as ads
+participant "Bidding Service" as bid
+database "Redis\n(кампании/баннеры)" as redis
+participant "Delivery Service" as del
+
+dsp -> gw: POST /rtb/v1/bid (OpenRTB bid request)
+activate gw
+gw -> gw: аутентификация (API-key/mTLS)\n+ rate limit check
+gw -> ads: gRPC-запрос\n(преобразовано из REST/OpenRTB)
+activate ads
+ads -> bid: PlaceBid(BidRequest)
+activate bid
+bid -> redis: чтение кампаний/баннеров\nпод критерии таргетинга
+redis --> bid: подходящие кампании
+bid -> bid: взвешивание ставок,\nвыбор победителя
+bid -> del: запрос рендера баннера\nпобедителя (render_context)
+activate del
+del --> bid: готовая HTML/JS-разметка
+deactivate del
+bid --> ads: BidResponse\n(победитель, цена, разметка)
+deactivate bid
+ads --> gw: gRPC-ответ
+deactivate ads
+gw --> dsp: 200 OK (OpenRTB bid response)
+deactivate gw
+
+note over dsp, del
+  Circuit Breaker на Gateway: если Ad Server/Bidding
+  деградирует — быстрый отказ, а не очередь,
+  чтобы не сорвать SLA партнёра 80 мс.
+end note
+
+@enduml
