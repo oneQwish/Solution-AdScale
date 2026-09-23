@@ -1,0 +1,64 @@
+@startuml event_flow
+left to right direction
+skinparam componentStyle rectangle
+
+title Kafka - продюсеры, топики и группы потребителей
+
+package "Продюсеры" {
+  [Bidding Service] as bid
+  [Delivery Service] as del
+  [Campaign Service\n(outbox)] as camp
+  [Financial Service\n(outbox)] as finP
+}
+
+package "Kafka (RF=3, Avro)" {
+  queue "rtb.auction-results.v1\n48 партиций, 3 дня" as tAuction
+  queue "rtb.win-notices.v1\n12 партиций, 7 дней" as tWin
+  queue "ads.impressions.v1\n24 партиции, 7 дней" as tImp
+  queue "ads.clicks.v1\n6 партиций, 7 дней" as tClick
+  queue "campaigns.changes.v1\n12 партиций, compacted" as tCamp
+  queue "finance.budget-updates.v1\n12 партиций, compacted" as tBudget
+  queue "*.dlq\n14 дней" as tDlq
+}
+
+package "Группы потребителей" {
+  [statistics-aggregator\n→ ClickHouse] as gStats
+  [analytics-marts\n→ ClickHouse] as gAn
+  [finance-billing\n→ Finance DB] as gFin
+  [cache-updater\n→ Redis] as gCache
+}
+
+bid --> tAuction
+del --> tWin
+del --> tImp
+del --> tClick
+camp --> tCamp
+finP --> tBudget
+
+tAuction --> gStats
+tImp --> gStats
+tClick --> gStats
+tWin --> gStats
+
+tAuction --> gAn
+tImp --> gAn
+tClick --> gAn
+tCamp --> gAn
+
+tImp --> gFin
+tClick --> gFin
+tWin --> gFin
+
+tCamp --> gCache
+tBudget --> gCache
+
+gFin ..> tDlq : после 5 неудачных попыток
+gStats ..> tDlq
+gCache ..> tDlq
+
+note bottom of gFin
+  Дедупликация по event_id в одной транзакции
+  с проводкой. Offset фиксируется после коммита.
+end note
+
+@enduml

@@ -1,0 +1,74 @@
+@startuml to_be_one_year
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+LAYOUT_WITH_LEGEND()
+LAYOUT_TOP_DOWN()
+
+title C4 Container Diagram - AdScale (TO-BE, через год, один регион из двух)
+
+Person(advertiser, "Рекламодатель", "Управляет кампаниями, бюджетами и ставками")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Просматривает рекламу, кликает по баннерам")
+System_Ext(dspPartner, "DSP/SSP-партнёры", "Bid requests / responses по OpenRTB")
+System_Ext(paymentGateway, "Платёжный шлюз", "Пополнение рекламных бюджетов")
+
+Container(apiGateway, "API Gateway", "Kong", "Единый вход: аутентификация, rate limiting, мониторинг задержки, маршрутизация")
+
+System_Boundary(hotPath, "Hot path (active-active в двух регионах)") {
+    Container(adServer, "Ad Server", "Go, C++", "OpenRTB-адаптеры партнёров, определение пользователя, подбор кандидатов, оркестрация ответа")
+    Container(biddingService, "Bidding Service", "C++", "Аукцион: взвешивание ставок, проверка бюджета, выбор победителя")
+    Container(deliveryService, "Delivery Service", "Node.js", "Разметка баннера, приём показов/кликов")
+    ContainerDb(redis, "Redis Cluster", "Redis", "Read-модели: таргетинг, кампании, бюджеты, сегменты пользователей, шаблоны")
+}
+
+System_Boundary(business, "Бизнес-сервисы") {
+    Container(campaignService, "Campaign Service", "Go", "Кампании, креативы, таргетинг, ставки - источник истины")
+    ContainerDb(campaignDb, "Campaign DB", "PostgreSQL + Patroni", "Кампании и креативы")
+    Container(financialService, "Financial Service", "Go", "Балансы, списания, счета")
+    ContainerDb(financeDb, "Finance DB", "PostgreSQL + Patroni", "Журнал проводок, балансы")
+    Container(adCabinet, "Advertiser Dashboard", "Node.js, BFF + SPA", "UI кабинета")
+}
+
+System_Boundary(dataPlane, "Данные и аналитика") {
+    Container(statsService, "Statistics Service", "Python", "Агрегация показов/кликов")
+    Container(analyticsService, "Analytics Service", "Python", "Отчёты и аналитика")
+    ContainerDb(clickhouse, "ClickHouse", "ClickHouse, ReplicatedMergeTree", "События и агрегаты (БД statistics), витрины (БД analytics)")
+}
+
+ContainerQueue(kafka, "Kafka", "Kafka + Schema Registry", "Результаты аукционов, показы, клики, изменения кампаний и бюджетов")
+Container(cacheUpdater, "Cache Updater", "Go", "Строит read-модели в Redis из событий")
+
+Rel(dspPartner, apiGateway, "Bid request / response", "HTTPS, OpenRTB JSON")
+Rel(endUser, apiGateway, "Показ баннера, клик", "HTTPS")
+Rel(advertiser, apiGateway, "Работа в кабинете", "HTTPS")
+
+Rel(apiGateway, adServer, "Bid requests", "HTTP")
+Rel(apiGateway, deliveryService, "Показы и клики", "HTTP")
+Rel(apiGateway, adCabinet, "Запросы кабинета", "HTTP")
+
+Rel(adServer, biddingService, "Запрос аукциона", "gRPC")
+Rel(adServer, deliveryService, "Разметка победителя", "gRPC")
+Rel(adServer, redis, "Таргетинг, сегменты", "Redis protocol")
+Rel(biddingService, redis, "Ставки, бюджеты", "Redis protocol")
+Rel(deliveryService, redis, "Шаблоны креативов", "Redis protocol")
+
+Rel(biddingService, kafka, "Результаты аукционов", "Kafka")
+Rel(deliveryService, kafka, "Показы, клики", "Kafka")
+Rel(campaignService, kafka, "Изменения кампаний (outbox)", "Kafka")
+Rel(financialService, kafka, "Изменения бюджетов (outbox)", "Kafka")
+
+Rel(kafka, cacheUpdater, "Изменения кампаний и бюджетов", "Kafka")
+Rel(cacheUpdater, redis, "Обновление read-моделей", "Redis protocol")
+Rel(kafka, financialService, "Показы, клики для списаний", "Kafka")
+Rel(kafka, statsService, "Результаты аукционов, показы, клики", "Kafka")
+Rel(kafka, analyticsService, "События для витрин", "Kafka")
+
+Rel(campaignService, campaignDb, "Чтение/запись", "SQL")
+Rel(financialService, financeDb, "Проводки, балансы", "SQL")
+Rel(statsService, clickhouse, "Пакетная запись", "Native protocol")
+Rel(analyticsService, clickhouse, "Витрины, отчёты", "SQL")
+
+Rel(adCabinet, campaignService, "Кампании", "REST")
+Rel(adCabinet, financialService, "Финансы", "REST")
+Rel(adCabinet, analyticsService, "Отчёты", "REST")
+Rel(financialService, paymentGateway, "Пополнение бюджета", "HTTPS, REST")
+
+@enduml

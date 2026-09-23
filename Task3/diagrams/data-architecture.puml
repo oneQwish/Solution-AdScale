@@ -1,0 +1,57 @@
+@startuml data_architecture
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+LAYOUT_WITH_LEGEND()
+LAYOUT_TOP_DOWN()
+
+title Данные AdScale - Database per Service (целевое состояние, один регион)
+
+System_Boundary(hot, "Hot path") {
+    Container(adServer, "Ad Server", "Go, C++", "Подбор кандидатов")
+    Container(bidding, "Bidding Service", "C++", "Аукцион")
+    Container(delivery, "Delivery Service", "Node.js", "Разметка, показы, клики")
+    ContainerDb(redisHot, "redis-hot", "Redis Cluster, 3-6 шардов x (primary + replica), без вытеснения", "Ставки, бюджеты, таргетинг, правила, шаблоны баннеров")
+    ContainerDb(redisSeg, "redis-segments", "Redis Cluster, LRU", "Сегменты пользователей")
+}
+
+System_Boundary(biz, "Бизнес-сервисы") {
+    Container(campaign, "Campaign Service", "Go", "Кампании, креативы, таргетинг")
+    ContainerDb(campaignDb, "Campaign DB", "PostgreSQL: primary + sync replica (Patroni) + async read replica", "Источник истины по кампаниям, outbox")
+    Container(finance, "Financial Service", "Go", "Балансы, списания, счета")
+    ContainerDb(financeDb, "Finance DB", "PostgreSQL: primary + sync replica (Patroni) + async replica для отчётов", "Журнал проводок, балансы, outbox")
+}
+
+System_Boundary(data, "Статистика и аналитика") {
+    Container(stats, "Statistics Service", "Python", "Агрегация событий")
+    Container(analytics, "Analytics Service", "Python", "Отчёты")
+    ContainerDb(clickhouse, "ClickHouse", "2-4 шарда по campaign_id x 2 реплики, партиции по дням", "БД statistics (события, агрегаты), БД analytics (витрины)")
+}
+
+ContainerQueue(kafka, "Kafka", "RF=3, Avro + Schema Registry", "Аукционы, показы, клики, изменения кампаний и бюджетов")
+Container(cacheUpdater, "Cache Updater", "Go", "Read-модели из событий")
+ContainerDb(backup, "Объектное хранилище", "S3-совместимое, другой регион", "Резервные копии PostgreSQL (WAL-G) и ClickHouse")
+
+Rel(adServer, redisHot, "Таргетинг", "Redis")
+Rel(adServer, redisSeg, "Сегменты", "Redis")
+Rel(bidding, redisHot, "Ставки, бюджеты", "Redis")
+Rel(delivery, redisHot, "Шаблоны", "Redis")
+Rel(bidding, kafka, "Результаты аукционов", "Kafka")
+Rel(delivery, kafka, "Показы, клики", "Kafka")
+
+Rel(campaign, campaignDb, "Чтение/запись", "SQL")
+Rel(finance, financeDb, "Проводки", "SQL")
+Rel(campaign, kafka, "campaigns.changes (outbox)", "Kafka")
+Rel(finance, kafka, "finance.budget-updates (outbox)", "Kafka")
+Rel(kafka, finance, "Показы, клики для списаний", "Kafka")
+
+Rel(kafka, cacheUpdater, "Изменения кампаний и бюджетов", "Kafka")
+Rel(cacheUpdater, redisHot, "Запись read-моделей", "Redis")
+Rel(kafka, stats, "События", "Kafka")
+Rel(kafka, analytics, "События, изменения кампаний", "Kafka")
+Rel(stats, clickhouse, "Пакетная вставка", "Native")
+Rel(analytics, clickhouse, "Витрины, запросы", "SQL")
+
+Rel(campaignDb, backup, "Ежедневная копия + WAL", "WAL-G")
+Rel(financeDb, backup, "Ежедневная копия + WAL", "WAL-G")
+Rel(clickhouse, backup, "Ежедневная копия", "clickhouse-backup")
+
+@enduml

@@ -1,0 +1,54 @@
+@startuml sequence_bid_request
+
+title Sequence - обработка bid request (hot path, бюджет 80 мс)
+
+actor "DSP-партнёр" as dsp
+participant "API Gateway\n(Kong)" as gw
+participant "Ad Server" as ads
+participant "Bidding Service" as bid
+database "Redis" as redis
+participant "Delivery Service" as del
+queue "Kafka" as kafka
+
+dsp -> gw: POST /rtb/v1/{partner}/bid\n(OpenRTB BidRequest)
+activate gw
+gw -> gw: key-auth + IP allowlist,\nrate limit, request_id
+gw -> ads: HTTP, таймаут 50 мс
+activate ads
+ads -> ads: OpenRTB-адаптер партнёра,\ndeadline = min(45 мс, tmax - 30 мс)
+ads -> redis: данные пользователя\nи таргетинга
+redis --> ads: кандидаты
+
+alt Circuit Breaker к Bidding закрыт
+    ads -> bid: провести аукцион (gRPC, deadline 15 мс)
+    activate bid
+    bid -> redis: ставки и бюджеты кандидатов
+    redis --> bid
+    bid -> bid: правила, проверка бюджета,\nвыбор победителя
+    bid -->> kafka: результат аукциона (async)
+    bid --> ads: победитель и цена или «нет ставки»
+    deactivate bid
+else Bidding недоступен или deadline истёк
+    ads -> ads: упрощённый выбор по локальной копии\n(дефолтная ставка) или «нет ставки»
+end
+
+alt Есть победитель
+    ads -> del: разметка (gRPC, deadline 10 мс)
+    activate del
+    del --> ads: HTML/JS-разметка из кеша шаблонов
+    deactivate del
+    ads --> gw: 200 BidResponse (цена, adm, nurl, burl)
+else «нет ставки», отказ Delivery или общий deadline истёк
+    ads --> gw: 204 No Content
+end
+deactivate ads
+gw --> dsp: ответ партнёру
+deactivate gw
+
+note over gw, del
+  Повторов на hot path нет: они не укладываются в 80 мс.
+  При отказах партнёр получает штатный ответ 204 вовремя,
+  а не ошибку 5xx.
+end note
+
+@enduml
